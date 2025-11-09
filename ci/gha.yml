@@ -23,6 +23,14 @@ jobs:
       run: |
         cd python/omnitoken
         maturin develop
+    - name: Test Rust
+      run: |
+        cd rust/omnitoken-core
+        cargo test
+        cd ../omnitoken-code
+        cargo test
+        cd ../omnitoken-store
+        cargo test
     - name: Test Python
       run: |
         cd python/omnitoken

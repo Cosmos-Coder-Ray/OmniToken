@@ -96,3 +96,29 @@ def test_alignment_mapping():
             assert end - start == 1
         else:
             assert text[start:end] == token_str
+
+def test_segment_probabilities():
+    tokenizer = Tokenizer()
+    corpus = ["hello world"]
+    tokenizer.train_streaming(iter(corpus), vocab_size=50)
+
+    text = "hello"
+    segmentations = tokenizer.segment_probabilities(text, top_k=1)
+
+    assert len(segmentations) == 1
+    assert isinstance(segmentations[0], tuple)
+    assert isinstance(segmentations[0][0], list)
+    assert isinstance(segmentations[0][1], float)
+
+def test_subword_regularization():
+    # 1. Train with subword regularization
+    tokenizer_reg = Tokenizer()
+    corpus = ["hello world", "this is a test corpus", "for unigram model training."]
+    tokenizer_reg.train_streaming(iter(corpus), vocab_size=50, subword_regularization=True)
+
+    # 2. Train without subword regularization
+    tokenizer_no_reg = Tokenizer()
+    tokenizer_no_reg.train_streaming(iter(corpus), vocab_size=50, subword_regularization=False)
+
+    # 3. The vocabularies should be different
+    assert tokenizer_reg._tokenizer.vocab != tokenizer_no_reg._tokenizer.vocab

@@ -26,3 +26,7 @@ repos:
     hooks:
     -   id: clippy
         args: [--manifest-path, rust/omnitoken-core/Cargo.toml, --, -D, warnings]
+    -   id: clippy
+        args: [--manifest-path, rust/omnitoken-code/Cargo.toml, --, -D, warnings]
+    -   id: clippy
+        args: [--manifest-path, rust/omnitoken-store/Cargo.toml, --, -D, warnings]

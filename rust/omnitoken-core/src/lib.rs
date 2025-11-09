@@ -1,6 +1,7 @@
 #![allow(non_local_definitions)]
 use pyo3::prelude::*;
 use std::collections::HashMap;
+use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
 use omnitoken_code::CodePreTokenizer;
 
@@ -10,6 +11,7 @@ type EncodeResult = (Vec<u32>, Vec<(usize, usize)>);
 #[derive(Clone, Archive, Deserialize, Serialize)]
 #[archive(check_bytes)]
 pub struct Tokenizer {
+    #[pyo3(get)]
     pub vocab: HashMap<String, f64>,
     pub vocab_to_ids: HashMap<String, u32>,
     pub ids_to_vocab: HashMap<u32, String>,
@@ -32,7 +34,7 @@ impl Tokenizer {
         Tokenizer { vocab, vocab_to_ids, ids_to_vocab, code_pre_tokenizer: CodePreTokenizer::new() }
     }
 
-    fn train(&mut self, corpus: Vec<String>, vocab_size: usize, shrinking_factor: f64) {
+    fn train(&mut self, corpus: Vec<String>, vocab_size: usize, shrinking_factor: f64, subword_regularization: bool) {
         // 1. Initialize with all single characters
         let mut vocab: HashMap<String, f64> = (0..256).map(|i| ((i as u8) as char).to_string()).map(|c| (c, 0.0)).collect();
 
@@ -48,7 +50,11 @@ impl Tokenizer {
             // E-step: Segment the text and count frequencies
             let mut freqs = HashMap::new();
             for line in &corpus {
-                let segmentation = self.viterbi_segment(line);
+                let segmentation = if subword_regularization {
+                    self.sample_segmentation(line)
+                } else {
+                    self.viterbi_segment(line)
+                };
                 for (token, _) in segmentation {
                     *freqs.entry(token).or_insert(0) += 1;
                 }
@@ -162,6 +168,82 @@ impl Tokenizer {
         }
         result
     }
+
+    fn segment_probabilities(&self, text: &str, top_k: usize) -> PyResult<Vec<(Vec<String>, f64)>> {
+        let mut chart = vec![Vec::new(); text.len() + 1];
+        chart[0].push((Vec::new(), 0.0));
+
+        for i in 1..=text.len() {
+            for j in 0..i {
+                let sub = &text[j..i];
+                if let Some(score) = self.vocab.get(sub) {
+                    for (prev_seg, prev_score) in chart[j].clone() {
+                        let mut new_seg = prev_seg.clone();
+                        new_seg.push(sub.to_string());
+                        chart[i].push((new_seg, prev_score + score));
+                    }
+                }
+            }
+        }
+
+        let mut segmentations = chart[text.len()].clone();
+        segmentations.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        segmentations.truncate(top_k);
+
+        Ok(segmentations)
+    }
+
+    fn sample_segmentation(&self, text: &str) -> Vec<(String, (usize, usize))> {
+        let mut chart = vec![Vec::new(); text.len() + 1];
+        chart[0].push((0.0, None));
+
+        for i in 1..=text.len() {
+            for j in 0..i {
+                let sub = &text[j..i];
+                if let Some(score) = self.vocab.get(sub) {
+                    for (prev_score, _) in chart[j].clone() {
+                        chart[i].push((prev_score + score, Some(j)));
+                    }
+                }
+            }
+        }
+
+        let mut segmentation = Vec::new();
+        let mut i = text.len();
+        while i > 0 {
+            let candidates = &chart[i];
+            let scores: Vec<f64> = candidates.iter().map(|(score, _)| *score).collect();
+            let choice = rand::thread_rng().gen_range(0.0..1.0);
+            let mut cumulative = 0.0;
+            let mut chosen_j = None;
+            let sum_score = scores.iter().sum::<f64>();
+            let normalized_scores: Vec<f64> = scores.iter().map(|s| (s - sum_score).exp()).collect();
+            let sum_normalized = normalized_scores.iter().sum::<f64>();
+
+            for (((_, j), score), _) in candidates.iter().zip(normalized_scores).zip(0..) {
+                cumulative += score / sum_normalized;
+                if choice < cumulative {
+                    chosen_j = *j;
+                    break;
+                }
+            }
+
+            if let Some(j) = chosen_j {
+                segmentation.push((text[j..i].to_string(), (j, i)));
+                i = j;
+            } else {
+                // Fallback
+                if let Some((new_i, last_char)) = text[..i].char_indices().next_back() {
+                    segmentation.push((last_char.to_string(), (new_i, i)));
+                    i = new_i;
+                } else {
+                    break;
+                }
+            }
+        }
+        segmentation.reverse();
+        segmentation
+    }
 }
 
 #[cfg(test)]
@@ -172,7 +254,7 @@ mod tests {
     fn test_unigram_train_and_encode() {
         let mut tokenizer = Tokenizer::new(HashMap::new());
         let corpus = vec!["hello world".to_string(), "hello".to_string()];
-        tokenizer.train(corpus, 10, 0.5);
+        tokenizer.train(corpus, 10, 0.5, false);
 
         let (ids, _) = tokenizer.encode("hello", None).unwrap();
         let tokens: Vec<String> = ids.iter().map(|id| tokenizer.ids_to_vocab[id].clone()).collect();
